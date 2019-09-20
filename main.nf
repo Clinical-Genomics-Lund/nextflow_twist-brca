@@ -157,24 +157,19 @@ else {
 }
 
 process tnscope {
+    cpus 16
     input:
     set group, type, id, file(bam), file(bai), file(plot) from bam_tnscope
     output:
-    file("test")
+    set group, file("${group}_tnscope.vcf"), file("${group}_tnscope.vcf.idx") into tnscope_vcf
     script:
     if(mode == "paired") { 
-    if (type[0] =~ /tumor/ ) {
-        t_index = 0
-        n_index = 1
-    }
-    else {     
-        t_index = 1
-        n_index = 0
-    }
-    tumor = bam[t_index]
-    tumor_id = id[t_index]
-    normal = bam[n_index]
-    normal_id = id[n_index]
+    tumor_index = bam.findIndexOf{ it ==~ /tumor_.+/ }
+    tumor = bam[tumor_index]
+    tumor_id = id[tumor_index]
+    normal_index = bam.findIndexOf{ it ==~ /normal_.+/ }
+    normal = bam[normal_index]
+    normal_id = id[normal_index]
     """
     sentieon driver -t ${task.cpus} -r $genome_file -i $tumor -i $normal --algo TNscope \\
     --tumor_sample ${tumor_id}_tumor --normal_sample ${normal_id}_normal --dbsnp $dbsnp ${group}_tnscope.vcf
@@ -187,9 +182,30 @@ process tnscope {
     }
 }
 
-// process freebayes{
-
-// }
+process freebayes{
+    cpus 16
+    input:
+    set group, type, id, file(bam), file(bai), file(plot) from bam_freebayes.view()
+    output:
+    set group, file("${group}_freebayes.vcf") into freebayes_vcf
+    script:
+    if(mode == "paired") { 
+    tumor_index = bam.findIndexOf{ it ==~ /tumor_.+/ }
+    tumor = bam[tumor_index]
+    tumor_id = id[tumor_index]
+    normal_index = bam.findIndexOf{ it ==~ /normal_.+/ }
+    normal = bam[normal_index]
+    normal_id = id[normal_index]
+    """
+    echo "$tumor_id:$tumor   $normal_id:$normal" > ${group}_freebayes.vcf
+    """
+    }
+    else {
+    """
+    ${group}_freebayes.vcf
+    """
+    }
+}
 
 // process manta {
 
