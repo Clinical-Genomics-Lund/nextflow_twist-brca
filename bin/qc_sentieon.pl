@@ -38,9 +38,11 @@ while( <INS> ) {
 	    <INS>;
 	    my $vals = <INS>;
 	    my @a = split /\t/, $vals;
-	    $results{'ins_size'} = $a[4];
+        my $ins_size = sprintf "%.0f", $a[4];
+	    $results{'ins_size'} = $ins_size;
         #print "ins_size: $a[4]\n";
-	    $results{'ins_size_dev'} = $a[5];
+        my $ins_size_dev = sprintf "%.0f", $a[5];
+	    $results{'ins_size_dev'} = $ins_size_dev;
         #print "ins_size_dev: $a[5]\n";
 	}
 }
@@ -112,6 +114,6 @@ while( <COV_THRESH> ) {
 close COV_THRESH;
 
 $results{'pct_above_x'} = \%pct_above_x;
-
+$results{'sample_id'} = $SID;
 my $json = JSON->new->allow_nonref;
 print $json->pretty->encode( \%results );
