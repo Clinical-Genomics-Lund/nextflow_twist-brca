@@ -9,6 +9,8 @@ targets = params.targets
 targets_zip = params.targets_zip
 targets_brca12 = params.targets_brca12
 target_intervals = params.target_intervals
+bed_melt = params.bed_melt
+mei_list = params.mei_list
 genome_file = params.genome_file
 cadd = params.cadd
 vep_fast = params.vep_fast
@@ -51,7 +53,7 @@ process trimmomatic {
     $r1 $r2 \\
     ${type}_R1_umitrimmed.fq.gz /dev/null \\
     ${type}_R2_umitrimmed.fq.gz /dev/null \\
-    HEADCROP:5 MINLEN:30
+    ILLUMINACLIP:$brca_adapt:3:12:7:1:true MINLEN:30
     trimmomatic -Xmx12G PE -phred33 -threads ${task.cpus} \\
     ${type}_R1_umitrimmed.fq.gz ${type}_R2_umitrimmed.fq.gz \\
     ${type}_R1_qualtrimmed.fq.gz /dev/null \\
@@ -143,7 +145,7 @@ process sentieon_qc {
     input:
 	set group, type, id, file(bam), file(bai), file(depup) from bam_dedup_stats
     output:
-    file("*.txt")
+    set group, type, id, file("${id}.QC") into qc_val
     """
     sentieon driver -r $genome_file --interval $target_intervals -t ${task.cpus} -i ${bam} --algo MeanQualityByCycle mq_metrics.txt --algo QualDistribution qd_metrics.txt \\
     --algo GCBias --summary gc_summary.txt gc_metrics.txt --algo AlignmentStat aln_metrics.txt --algo InsertSizeMetricAlgo is_metrics.txt \\
@@ -246,13 +248,50 @@ process manta {
 
 }
 
-// process melt {
-// java -jar  /opt/MELT.jar Single -bamfile $bam -r 150 -h $genome_file \\
-// -n  /data/bnf/sw/melt/MELTv2.1.5/add_bed_files/1KGP_Hg19/hg19.genes.bed -z 50000 \\
-// -d 50 -t /data/bnf/sw/melt/MELTv2.1.5//me_refs/1KGP_Hg19/mei_list.txt -w /data/bnf/tmp/swea/19PL20808.bwa_swea.paired.melt.vcf.folder \\
-// -b 1/2/3/4/5/6/7/8/9/10/11/12/14/15/16/18/19/20/21/22 \\
-// -c $MEAN_DEPTH -cov $COV_DEV -e $INS_SIZE
-// }
+qc_val
+    .groupTuple()
+    .set{ qc_tables }
+process melt {
+    cpus 16
+    input:
+    set group, type, id, file(bam), file(bai), file(plot) from bam_melt
+    set group2, type2, id2, qc from qc_tables
+    when:
+    params.melt
+    output:
+    file("test")
+    script:
+    if(mode == "paired") { 
+    normal_index = bam.findIndexOf{ it ==~ /normal_.+/ }
+    normal = bam[normal_index]
+    normal_id = id[normal_index]
+    qc_index = type2.findIndexOf{ it ==~ /normal/ }
+    qc = qc[qc_index]
+    }
+    // Collect qc-data if possible from normal sample, if only tumor; tumor
+    qc.readLines().each{
+        if (it =~ /\"(ins_size_dev)\" : \"(\S+)\"/) {
+            ins_dev = it =~ /\"(ins_size_dev)\" : \"(\S+)\"/
+        }
+        if (it =~ /\"(mean_coverage)\" : \"(\S+)\"/) {
+            coverage = it =~ /\"(mean_coverage)\" : \"(\S+)\"/
+        }
+        if (it =~ /\"(ins_size)\" : \"(\S+)\"/) {
+            ins_size = it =~ /\"(ins_size)\" : \"(\S+)\"/
+        }
+    }
+    INS_SIZE = ins_size[0][2]
+    MEAN_DEPTH = coverage[0][2]
+    COV_DEV = ins_dev[0][2]
+    """
+    java -jar  /opt/MELT.jar Single -bamfile $bam -r 150 -h $genome_file \\
+    -n  $bed_melt -z 50000 \\
+    -d 50 -t $mei_list -w . \\
+    -b 1/2/3/4/5/6/7/8/9/10/11/12/14/15/16/18/19/20/21/22 \\
+    -c $MEAN_DEPTH -cov $COV_DEV -e $INS_SIZE
+    """
+
+}
 
 // process VEP {
 
