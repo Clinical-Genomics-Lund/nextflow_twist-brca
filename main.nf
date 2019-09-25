@@ -14,21 +14,15 @@ mei_list = params.mei_list
 genome_file = params.genome_file
 cadd = params.cadd
 vep_fast = params.vep_fast
-maxentscan = params.maxentscan
 vep_cache = params.vep_cache
 gnomad = params.gnomad
-gerp = params.gerp
-phylop =  params.phylop
-phastcons = params.phastcons
-snpsift = params.snpsift
-clinvar = params.clinvar
 swegen = params.swegen
-spidex = params.spidex
 sentieon_model = params.sentieon_model
 brca_adapt = params.brca_adapt
 known1_indels = params.known1
 known2_indels = params.known2
 dbsnp = params.dbsnp
+cosmic = params.cosmic
 ////////////////////////////////////////
 
 csv = file(params.csv)
@@ -41,7 +35,7 @@ Channel
     .map{ row-> tuple( row.group, row.type, row.id, row.read1, row.read2 ) }
     .set { fastq }
 
-// trimming dual-duplex umis from both reads. 
+// trimming adapter sequences, TODO: HEADCROP:5 for twist-data (UMIs)
 process trimmomatic {
     cpus 56
     input:
@@ -125,6 +119,7 @@ process bqsr {
 // apply bqsr to bam and plot before and after
 process recal_bam {
     cpus 16
+    publishDir "${OUTDIR}/vcf/swea/", mode: 'copy', overwrite: 'true'
     input:
     set group, val(type), val(id), file(bam), file(bai), file(score) from bqsr_table
     output:
@@ -166,13 +161,14 @@ else {
     bam_done
         .into{ bam_tnscope; bam_freebayes; bam_melt; bam_manta; }
 }
-
+// VARIANT CALLING
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 process tnscope {
     cpus 16
     input:
     set group, type, id, file(bam), file(bai), file(plot) from bam_tnscope
     output:
-    set group, file("${group}_tnscope.vcf"), file("${group}_tnscope.vcf.idx") into tnscope_vcf
+    set group, file("${group}_tnscope.vcf") into tnscope_vcf
     script:
     if(mode == "paired") { 
     tumor_index = bam.findIndexOf{ it ==~ /tumor_.+/ }
@@ -183,12 +179,14 @@ process tnscope {
     normal_id = id[normal_index]
     """
     sentieon driver -t ${task.cpus} -r $genome_file -i $tumor -i $normal --algo TNscope \\
-    --tumor_sample ${tumor_id}_tumor --normal_sample ${normal_id}_normal --dbsnp $dbsnp ${group}_tnscope.vcf
+    --tumor_sample ${tumor_id}_tumor --normal_sample ${normal_id}_normal --cosmic $cosmic --dbsnp $dbsnp ${group}_tnscope.vcf.raw
+    /opt/bin/filter_mutect.pl ${group}_tnscope.vcf.raw > ${group}_tnscope.vcf
     """
     }
     else {
     """
-    sentieon driver -t ${task.cpus} -r $genome_file -i $bam --algo TNscope --tumor_sample $id --dbsnp $dbsnp ${group}_tnscope.vcf
+    sentieon driver -t ${task.cpus} -r $genome_file -i $bam --algo TNscope --tumor_sample $id --cosmic $cosmic --dbsnp $dbsnp ${group}_tnscope.vcf.raw
+    /opt/bin/filter_mutect_single.pl ${group}_tnscope.vcf.raw > ${group}_tnscope.vcf
     """
     }
 }
@@ -208,12 +206,14 @@ process freebayes{
     normal = bam[normal_index]
     normal_id = id[normal_index]
     """
-    freebayes -f $genome_file -t $targets --pooled-continuous --pooled-discrete -F 0.03 $tumor $normal > ${group}_freebayes.vcf
+    freebayes -f $genome_file -t $targets --pooled-continuous --pooled-discrete -F 0.03 $tumor $normal > ${group}__freebayes.vcf
+    vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__freebayes.vcf > ${group}_freebayes.vcf
     """
     }
     else {
     """
     freebayes -f $genome_file -C 2 -F 0.01 --pooled-continuous --genotype-qualities -t $targets $bam > ${group}_freebayes.vcf
+    vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__freebayes.vcf > ${group}_freebayes.vcf
     """
     }
 }
@@ -223,6 +223,7 @@ process manta {
     input:
     set group, type, id, file(bam), file(bai), file(plot) from bam_manta
     output:
+    set group, file("${group}_manta.vcf") into manta_vcf
     when:
     params.manta
     script:
@@ -236,13 +237,14 @@ process manta {
     """
     configManta.py --tumorBam $tumor --normalBam $normal --reference $genome_file --exome --callRegions $targets_zip --generateEvidenceBam --runDir .
     python runWorkflow.py -m local -j ${task.cpus}
-    #/opt/bin/filter_manta.pl 
+    /opt/bin/filter_manta.pl results/variants/somaticSV.vcf.gz > ${group}_manta.vcf
     """
     }
     else {
     """
     configManta.py --tumorBam $tumor --reference $genome_file --exome --callRegions $targets_zip --generateEvidenceBam --runDir .
     python runWorkflow.py -m local -j ${task.cpus}
+    /opt/bin/filter_manta.pl results/variants/tumorSV.vcf.gz > ${group}_manta.vcf
     """
     }
 
@@ -259,7 +261,7 @@ process melt {
     when:
     params.melt
     output:
-    file("test")
+    set group, file("${group}_melt.vcf") into melt_vcf
     script:
     if(mode == "paired") { 
     normal_index = bam.findIndexOf{ it ==~ /normal_.+/ }
@@ -289,13 +291,85 @@ process melt {
     -d 50 -t $mei_list -w . \\
     -b 1/2/3/4/5/6/7/8/9/10/11/12/14/15/16/18/19/20/21/22 \\
     -c $MEAN_DEPTH -cov $COV_DEV -e $INS_SIZE
+    mv ALU.final_comp.vcf ${group}_melt.vcf
     """
 
 }
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// process VEP {
+tnscope_vcf
+    .mix(freebayes_vcf, manta_vcf, melt_vcf)
+    .set{ vcfs }
 
-// }
 
+// Post-processing of variant callers
+process normalize {
+    cpus 16
+    input:
+    set group, file(vcf) from vcfs
+    output:
+    set group, file("${group}.norm") into norm_vcf
 
+    """
+    vcfbreakmulti $vcf > ${group}.multibreak
+    bcftools norm -m-both -c w -O v -f $genome_file -o ${vcf}.norm ${group}.multibreak
+    rm ${group}.multibreak
+    """
+}
 
+process annotate_vep {
+    container = '/fs1/resources/containers/container_VEP.sif'
+    cpus 56
+    input:
+    set group, file(vcf) from norm_vcf
+    output:
+    set group, file("${group}.vep.vcf") into vep
+    """
+    vep \\
+    -i ${vcf} \\
+    -o ${vcf}.vep \\
+    --offline \\
+    --merged \\
+    --everything \\
+    --vcf \\
+    --no_stats \\
+    --fork ${task.cpus} \\
+    --force_overwrite \\
+    --plugin CADD,$CADD \\
+    --fasta $VEP_FASTA \\
+    --dir_cache $VEP_CACHE \\
+    --dir_plugins $VEP_CACHE/Plugins \\
+    --distance 200 \\
+    -cache \\
+    -custom $gnomad
+    """
+}
+
+process bgzip_index {
+    cpus 16
+    publishDir "${OUTDIR}/vcf/swea/", mode: 'copy', overwrite: 'true'
+    input:
+    set group, file(vcf) from vep
+    output:
+    set group, file("${vcf}.gz"), file("${vcf}.gz.tbi") into vcf_done
+    """
+    bgzip -@ ${task.cpus} $vcf -f
+    tabix ${vcf}.gz -f
+    """
+}
+
+process aggregate_vcf {
+    input:
+    set group, file(vcf), file(tbi) from vcf_done.groupTuple()
+    output:
+    script:
+    manta_index = bam.findIndexOf{ it ==~ /manta/ }
+    freebayes_index = bam.findIndexOf{ it ==~ /freebayes/ }
+    tnscope_index = bam.findIndexOf{ it ==~ /tnscope/ }
+    freebayes = vcf[freebayes_index]
+    mutect = vcf[tnscope_index]
+    manta = vcf[manta_index]
+    """
+    /opt/bin/aggregate_vcf.pl --freebayes $freebayes --mutect $mutect --manta $manta --base freebayes > ${group}_aggregated.vcf
+    """
+}
