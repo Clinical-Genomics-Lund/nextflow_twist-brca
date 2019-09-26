@@ -36,45 +36,169 @@ Channel
     .map{ row-> tuple( row.group, row.type, row.id, row.read1, row.read2 ) }
     .set { fastq }
 
-// trimming adapter sequences, TODO: HEADCROP:5 for twist-data (UMIs)
-process trimmomatic {
+process fq2sam {
     cpus 56
     input:
     set group, val(type), val(id), r1, r2 from fastq
     output:
-    set group, val(type), val(id), file("${type}_R1_qualtrimmed.fq.gz"),file("${type}_R2_qualtrimmed.fq.gz") into fastq_trimmed
+    set group, val(type), val(id), file("${id}_${type}.unaligned") into unaligned1
+    
     """
-    trimmomatic -Xmx12g PE -phred33 -threads ${task.cpus} \\
-    $r1 $r2 \\
-    ${type}_R1_umitrimmed.fq.gz /dev/null \\
-    ${type}_R2_umitrimmed.fq.gz /dev/null \\
-    ILLUMINACLIP:$brca_adapt:3:12:7:1:true MINLEN:30
-    trimmomatic -Xmx12G PE -phred33 -threads ${task.cpus} \\
-    ${type}_R1_umitrimmed.fq.gz ${type}_R2_umitrimmed.fq.gz \\
-    ${type}_R1_qualtrimmed.fq.gz /dev/null \\
-    ${type}_R2_qualtrimmed.fq.gz /dev/null \\
-    MAXINFO:30:0.25 MINLEN:30
+    picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. \\
+    FastqToSam \\
+    O=${id}_${type}.unaligned \\
+    F1=$r1 \\
+    F2=$r2 \\
+    SM=$id \\
+    LB=$id \\
+    PU=CMD \\
+    PL=illumina 
     """
 }
 
-// aligning with sentieon bwa
-process sentieon_bwa {
+process ExtractUmisFromBam {
     cpus 56
     input:
-    set group, val(type), id, file(r1), file(r2) from fastq_trimmed
+    set group, val(type), val(id), file(sam) from unaligned1
     output:
-    set group, type, id, file("${type}_${id}.bwa.sort.bam"), file("${type}_${id}.bwa.sort.bam.bai") into bams
+    set group, val(type), val(id), file("${sam}.umi") into umi_unaligned
     """
-    sentieon bwa mem -M \\
-    -R '@RG\\tID:${id}_${type}\\tSM:${id}_${type}\\tPL:illumina' \\
+    fgbio --tmp-dir=. ExtractUmisFromBam --input=$sam --output=${sam}.umi --read-structure=3M2S146T 3M2S146T --molecular-index-tags=ZA ZB --single-tag=RX
+    """
+
+}
+
+process MarkIlluminaAdapters {
+    cpus 56
+    input:
+    set group, val(type), val(id), file(sam) from umi_unaligned
+    output:
+    set group, val(type), val(id), file("${sam}.marked") into markedadapt
+    """
+    picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. \\
+    MarkIlluminaAdapters I=$sam O=${sam}.marked M=adapterMetrics.txt
+    """
+}
+
+process SamToFastq {
+    cpus 56
+    input:
+    set group, val(type), val(id), file(sam) from markedadapt
+    output:
+    set group, val(type), val(id), file("${sam}.aligned") into fastq2
+    """
+    picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. \\
+    SamToFastq \\
+    I=$sam \\
+    CLIPPING_ATTRIBUTE=XT
+    CLIPPING_ACTION=X
+    CLIPPING_MIN_LENGTH=36
+    INCLUDE_NON_PF_READS=true
+    F=/dev/stdout
+    INTERLEAVE=true
+    | sentieon bwa mem -M \\
     -t ${task.cpus} \\
-    $genome_file \\
-    ${r1} ${r2} | \\
-    sentieon util sort \\
     -r $genome_file \\
-    -o ${type}_${id}.bwa.sort.bam \\
+    -p \\
+    /dev/stdin \\
+    | picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. \\
+    MergeBamAlignment \\
+    UNMAPPED=$sam \\
+    ALIGNED=/dev/stdin \\
+    O=${sam}.aligned \\
+    R=$genome_file \\
+    CLIP_ADAPTERS=false \\
+    VALIDATION_STRINGENCY=SILENT \\
+    CREATE_INDEX=true \\ 
+    EXPECTED_ORIENTATIONS=FR \\
+    MAX_GAPS=-1 \\
+    SO=coordinate \\
+    ALIGNER_PROPER_PAIR_FLAGS=false
+    """
+}
+
+
+process GroupReadsByUmi {
+    cpus 56
+    input:
+    set group, val(type), val(id), file(bam) from fastq2
+    output:
+    set group, val(type), val(id), file("${bam}.grouped") into grouped_umi
+    """
+    fgbio --tmp-dir=. GroupReadsByUmi --strategy=paired --input=$bam --output=${bam}.grouped --raw-tag=RX --assign-tag=MI --min-map-q=10 --edits=1
+    """
+}
+grouped_umi
+    .into { grouped_umi1; grouped_umi2 }
+process CallDuplexConsensusReads {
+    cpus 56
+    input:
+    set group, val(type), val(id), file(bam) from grouped_umi1
+    output:
+    set group, val(type), val(id), file("${bam}.consensus") into consensus
+    """
+    fgbio --tmp-dir=. CallDuplexConsensusReads --strategy=paired --input=$bam --output=${bam}.consensus --threads=${task.cpus} --min-reads=1 1 3
+    """
+}
+
+process CollectDuplexSeqMetrics {
+    cpus 56
+    input:
+    set group, val(type), val(id), file(bam) from grouped_umi2
+    output:
+    set group, val(type), val(id), file("${id}_metrics") into seqmetrics
+    """
+    fgbio --tmp-dir=. CollectDuplexSeqMetrics --strategy=paired --input=$fq --output=${id}_metrics
+    """
+}
+
+
+process SamToFastq2 {
+    cpus 56
+    input:
+    set group, val(type), val(id), file(bam) from consensus
+    output:
+    set group, val(type), val(id), file("${bam}.consensusAligned") into bams
+    """
+    picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. \\
+    SamToFastq \\
+    I=$bam \\
+    F=/dev/stdout \\
+    INTERLEAVE=true \\
+    INCLUDE_NON_PF_READS=true \\
+    INCLUDE_NON_PF_READS=true \\
+    F=/dev/stdout
+    INTERLEAVE=true
+    | sentieon bwa mem -M \\
     -t ${task.cpus} \\
-    --sam2bam -i -
+    -r $genome_file \\
+    -p \\
+    /dev/stdin None \\
+    | picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. \\
+    MergeBamAlignment \\
+    UNMAPPED=$sam \\
+    ALIGNED=/dev/stdin \\
+    O=${bam}.consensusAligned \\
+    R=$genome_file \\
+    CLIP_ADAPTERS=false \\
+    VALIDATION_STRINGENCY=SILENT \\
+    CREATE_INDEX=true \\ 
+    EXPECTED_ORIENTATIONS=FR \\
+    MAX_GAPS=-1 \\
+    SO=coordinate \\
+    ALIGNER_PROPER_PAIR_FLAGS=false \\
+    ATTRIBUTES_TO_RETAIN=X0 \\
+    ATTRIBUTES_TO_RETAIN=ZS \\
+    ATTRIBUTES_TO_RETAIN=ZI \\
+	ATTRIBUTES_TO_RETAIN=ZM \\
+	ATTRIBUTES_TO_RETAIN=ZC \\
+	ATTRIBUTES_TO_RETAIN=ZN \\
+	ATTRIBUTES_TO_REVERSE=ad \\
+	ATTRIBUTES_TO_REVERSE=bd \\
+	ATTRIBUTES_TO_REVERSE=cd \\
+	ATTRIBUTES_TO_REVERSE=ae \\
+	ATTRIBUTES_TO_REVERSE=be \\
+	ATTRIBUTES_TO_REVERSE=ce
     """
 }
 
