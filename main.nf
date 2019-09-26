@@ -12,8 +12,9 @@ target_intervals = params.target_intervals
 bed_melt = params.bed_melt
 mei_list = params.mei_list
 genome_file = params.genome_file
+genome_file_fai = params.genome_file_fai
 cadd = params.cadd
-vep_fast = params.vep_fast
+vep_fasta = params.vep_fasta
 vep_cache = params.vep_cache
 gnomad = params.gnomad
 swegen = params.swegen
@@ -119,7 +120,7 @@ process bqsr {
 // apply bqsr to bam and plot before and after
 process recal_bam {
     cpus 16
-    publishDir "${OUTDIR}/vcf/swea/", mode: 'copy', overwrite: 'true'
+    publishDir "${outdir}/vcf/swea/", mode: 'copy', overwrite: 'true'
     input:
     set group, val(type), val(id), file(bam), file(bai), file(score) from bqsr_table
     output:
@@ -216,6 +217,8 @@ process freebayes{
     vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__freebayes.vcf > ${group}_freebayes.vcf
     """
     }
+    // add multithreading
+    // freebayes-parallel <(fasta_generate_regions.py $genome_file_fai 100000) 36 -f ref.fa aln.bam > out.vcf
 }
 
 process manta {
@@ -282,6 +285,7 @@ process melt {
             ins_size = it =~ /\"(ins_size)\" : \"(\S+)\"/
         }
     }
+    // might need to be defined for -resume to work "def INS_SIZE" and so on....
     INS_SIZE = ins_size[0][2]
     MEAN_DEPTH = coverage[0][2]
     COV_DEV = ins_dev[0][2]
@@ -308,7 +312,7 @@ process normalize {
     input:
     set group, file(vcf) from vcfs
     output:
-    set group, file("${group}.norm") into norm_vcf
+    set group, file("${vcf}.norm") into norm_vcf
 
     """
     vcfbreakmulti $vcf > ${group}.multibreak
@@ -323,7 +327,7 @@ process annotate_vep {
     input:
     set group, file(vcf) from norm_vcf
     output:
-    set group, file("${group}.vep.vcf") into vep
+    set group, file("${vcf}.vep") into vep
     """
     vep \\
     -i ${vcf} \\
@@ -332,13 +336,14 @@ process annotate_vep {
     --merged \\
     --everything \\
     --vcf \\
+    --format vcf  \\
     --no_stats \\
     --fork ${task.cpus} \\
     --force_overwrite \\
-    --plugin CADD,$CADD \\
-    --fasta $VEP_FASTA \\
-    --dir_cache $VEP_CACHE \\
-    --dir_plugins $VEP_CACHE/Plugins \\
+    --plugin CADD,$cadd \\
+    --fasta $vep_fasta \\
+    --dir_cache $vep_cache \\
+    --dir_plugins $vep_cache/Plugins \\
     --distance 200 \\
     -cache \\
     -custom $gnomad
@@ -347,7 +352,7 @@ process annotate_vep {
 
 process bgzip_index {
     cpus 16
-    publishDir "${OUTDIR}/vcf/swea/", mode: 'copy', overwrite: 'true'
+    publishDir "${outdir}/vcf/swea/", mode: 'copy', overwrite: 'true'
     input:
     set group, file(vcf) from vep
     output:
@@ -358,18 +363,20 @@ process bgzip_index {
     """
 }
 
-process aggregate_vcf {
-    input:
-    set group, file(vcf), file(tbi) from vcf_done.groupTuple()
-    output:
-    script:
-    manta_index = bam.findIndexOf{ it ==~ /manta/ }
-    freebayes_index = bam.findIndexOf{ it ==~ /freebayes/ }
-    tnscope_index = bam.findIndexOf{ it ==~ /tnscope/ }
-    freebayes = vcf[freebayes_index]
-    mutect = vcf[tnscope_index]
-    manta = vcf[manta_index]
-    """
-    /opt/bin/aggregate_vcf.pl --freebayes $freebayes --mutect $mutect --manta $manta --base freebayes > ${group}_aggregated.vcf
-    """
-}
+// process aggregate_vcf {
+//     input:
+//     set group, file(vcf), file(tbi) from vcf_done.groupTuple()
+//     output:
+//     script:
+//     manta_index = vcf.findIndexOf{ it ==~ /manta/ }
+//     freebayes_index = vcf.findIndexOf{ it ==~ /freebayes/ }
+//     tnscope_index = vcf.findIndexOf{ it ==~ /tnscope/ }
+//     freebayes = vcf[freebayes_index]
+//     mutect = vcf[tnscope_index]
+//     manta = vcf[manta_index]
+//     """
+//     /opt/bin/aggregate_vcf.pl --freebayes $freebayes --mutect $mutect --manta $manta --base freebayes > ${group}_aggregated.vcf
+//     """
+// }
+
+
