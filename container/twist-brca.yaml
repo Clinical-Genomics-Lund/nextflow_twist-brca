@@ -6,6 +6,7 @@ channels:
 
 dependencies:
     - bioconda::picard=2.18.26
+    - bioconda::fgbio=1.0.0
     - bioconda::samtools=1.9
     - bioconda::sambamba=0.6.8
     - bioconda::vcflib=1.0.0_rc2
