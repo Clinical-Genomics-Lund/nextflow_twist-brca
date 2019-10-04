@@ -38,30 +38,34 @@ Channel
 
 process fq2sam {
     cpus 56
+
     input:
     set group, val(type), val(id), r1, r2 from fastq
+
     output:
     set group, val(type), val(id), file("${id}_${type}.unaligned") into unaligned1
     
     """
-    picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. \\
-    FastqToSam \\
-    O=${id}_${type}.unaligned \\
-    F1=$r1 \\
-    F2=$r2 \\
-    SM=$id \\
-    LB=$id \\
-    PU=CMD \\
-    PL=illumina 
+    picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. FastqToSam \\
+        O=${id}_${type}.unaligned \\
+        F1=$r1 \\
+        F2=$r2 \\
+        SM=$id \\
+        LB=$id \\
+        PU=CMD \\
+        PL=illumina 
     """
 }
 
 process ExtractUmisFromBam {
     cpus 56
+
     input:
     set group, val(type), val(id), file(sam) from unaligned1
+
     output:
     set group, val(type), val(id), file("${sam}.umi") into umi_unaligned
+
     """
     fgbio --tmp-dir=. ExtractUmisFromBam --input=$sam --output=${sam}.umi --read-structure=3M2S146T 3M2S146T --molecular-index-tags=ZA ZB --single-tag=RX
     """
@@ -70,10 +74,13 @@ process ExtractUmisFromBam {
 
 process MarkIlluminaAdapters {
     cpus 56
+
     input:
     set group, val(type), val(id), file(sam) from umi_unaligned
+
     output:
     set group, val(type), val(id), file("${sam}.marked") into markedadapt
+
     """
     picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. \\
     MarkIlluminaAdapters I=$sam O=${sam}.marked M=adapterMetrics.txt
@@ -82,13 +89,35 @@ process MarkIlluminaAdapters {
 
 process SamToFastq {
     cpus 56
+
     input:
     set group, val(type), val(id), file(sam) from markedadapt
+
     output:
     set group, val(type), val(id), file("${sam}.aligned") into fastq2
+
     """
-    picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. SamToFastq I=$sam CLIPPING_ATTRIBUTE=XT CLIPPING_ACTION=X CLIPPING_MIN_LENGTH=36 NON_PF=true F=/dev/stdout INTERLEAVE=true \\
-    | sentieon bwa mem -M -t ${task.cpus} -Y $genome_file -p /dev/stdin | picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. MergeBamAlignment UNMAPPED=$sam ALIGNED=/dev/stdin O=${sam}.aligned R=$genome_file CLIP_ADAPTERS=false VALIDATION_STRINGENCY=SILENT CREATE_INDEX=true EXPECTED_ORIENTATIONS=FR MAX_GAPS=-1 SO=coordinate ALIGNER_PROPER_PAIR_FLAGS=false
+    picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. SamToFastq \\
+        I=$sam \\
+        CLIPPING_ATTRIBUTE=XT \\
+        CLIPPING_ACTION=X \\
+        CLIPPING_MIN_LENGTH=36 \\
+        NON_PF=true \\
+        F=/dev/stdout \\
+        INTERLEAVE=true \\
+        | sentieon bwa mem -M -t ${task.cpus} $genome_file -p /dev/stdin \\
+        | picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. MergeBamAlignment \\
+            UNMAPPED=$sam \\
+            ALIGNED=/dev/stdin \\
+            O=${sam}.aligned \\
+            R=$genome_file \\
+            CLIP_ADAPTERS=false \\
+            VALIDATION_STRINGENCY=SILENT \\
+            CREATE_INDEX=true \\
+            EXPECTED_ORIENTATIONS=FR \\
+            MAX_GAPS=-1 \\
+            SO=coordinate \\
+            ALIGNER_PROPER_PAIR_FLAGS=false
     """
 }
 
@@ -108,12 +137,19 @@ grouped_umi
 process CallDuplexConsensusReads {
     cpus 20
     memory '120 GB'
+
     input:
     set group, val(type), val(id), file(bam) from grouped_umi1
+
     output:
     set group, val(type), val(id), file("${bam}.consensus") into consensus
+
     """
-    fgbio --tmp-dir=/tmp/ -Xmx60g CallDuplexConsensusReads --input=$bam --output=${bam}.consensus --threads=${task.cpus} --min-reads=1
+    fgbio --tmp-dir=/tmp/ -Xmx60g CallDuplexConsensusReads \\
+        --input=$bam \\
+        --output=${bam}.consensus \\
+        --threads=${task.cpus} \\
+        --min-reads=1 1 0
     """
 }
 
@@ -131,6 +167,7 @@ process CollectDuplexSeqMetrics {
 
 process SamToFastq2 {
     cpus 56
+    cache false
 
     input:
     set group, val(type), val(id), file(bam) from consensus
@@ -139,10 +176,37 @@ process SamToFastq2 {
     set group, val(type), val(id), file("${bam}.consensusAligned.bam"), file("${bam}.consensusAligned.bai") into bams
 
     """
-    picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. SamToFastq I=$bam F=/dev/stdout INTERLEAVE=true INCLUDE_NON_PF_READS=true INCLUDE_NON_PF_READS=true F=/dev/stdout INTERLEAVE=true \\
-    | sentieon bwa mem -M -t ${task.cpus} -Y $genome_file -p /dev/stdin None | picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. MergeBamAlignment UNMAPPED=$bam ALIGNED=/dev/stdin \\
-    O=${bam}.consensusAligned.bam R=$genome_file CLIP_ADAPTERS=false VALIDATION_STRINGENCY=SILENT CREATE_INDEX=true EXPECTED_ORIENTATIONS=FR MAX_GAPS=-1 SO=coordinate ALIGNER_PROPER_PAIR_FLAGS=false \\
-    ATTRIBUTES_TO_RETAIN=X0 ATTRIBUTES_TO_RETAIN=ZS ATTRIBUTES_TO_RETAIN=ZI ATTRIBUTES_TO_RETAIN=ZM ATTRIBUTES_TO_RETAIN=ZC ATTRIBUTES_TO_RETAIN=ZN ATTRIBUTES_TO_REVERSE=ad ATTRIBUTES_TO_REVERSE=bd ATTRIBUTES_TO_REVERSE=cd ATTRIBUTES_TO_REVERSE=ae ATTRIBUTES_TO_REVERSE=be ATTRIBUTES_TO_REVERSE=ce
+    picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. SamToFastq \\
+        I=$bam \\
+        VALIDATION_STRINGENCY=SILENT \\
+        F=/dev/stdout \\
+        INTERLEAVE=true \\
+        NON_PF=true \\
+        | sentieon bwa mem -M -t ${task.cpus} $genome_file -p /dev/stdin None\\
+        | picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. MergeBamAlignment \\
+            UNMAPPED=$bam \\
+            ALIGNED=/dev/stdin \\
+            O=${bam}.consensusAligned.bam \\
+            R=$genome_file \\
+            CLIP_ADAPTERS=false \\
+            VALIDATION_STRINGENCY=SILENT \\
+            CREATE_INDEX=true \\
+            EXPECTED_ORIENTATIONS=FR \\
+            MAX_GAPS=-1 \\
+            SO=coordinate \\
+            ALIGNER_PROPER_PAIR_FLAGS=false \\
+            ATTRIBUTES_TO_RETAIN=X0 \\
+            ATTRIBUTES_TO_RETAIN=ZS \\
+            ATTRIBUTES_TO_RETAIN=ZI \\
+            ATTRIBUTES_TO_RETAIN=ZM \\
+            ATTRIBUTES_TO_RETAIN=ZC \\
+            ATTRIBUTES_TO_RETAIN=ZN \\
+            ATTRIBUTES_TO_REVERSE=ad \\
+            ATTRIBUTES_TO_REVERSE=bd \\
+            ATTRIBUTES_TO_REVERSE=cd \\
+            ATTRIBUTES_TO_REVERSE=ae \\
+            ATTRIBUTES_TO_REVERSE=be \\
+            ATTRIBUTES_TO_REVERSE=ce
     """
 }
 
@@ -150,24 +214,30 @@ process SamToFastq2 {
 // locus collector + dedup of bam
 process locus_collector_dedup {
     cpus 16
+
     input:
     set group, val(type), val(id), file(bam), file(bai) from bams
+
     output:
     set group, val(type), val(id), file("${type}_${id}.bwa.sort.dedup.bam"), file("${type}_${id}.bwa.sort.dedup.bam.bai") into dedup_bam
-    set group, val(type), val(id), file(bam), file(bai), file("${type}_metrics.txt") into bam_dedup_stats
+    set group, val(type), val(id), file(bam), file(bai), file("dedup_metrics.txt") into bam_dedup_stats
+
     """
     sentieon driver -t ${task.cpus} -i $bam --algo LocusCollector --fun score_info ${type}_score.gz
-    sentieon driver -t ${task.cpus} -i $bam --algo Dedup --rmdup --score_info ${type}_score.gz --metrics ${type}_metrics.txt ${type}_${id}.bwa.sort.dedup.bam
+    sentieon driver -t ${task.cpus} -i $bam --algo Dedup --rmdup --score_info ${type}_score.gz --metrics dedup_metrics.txt ${type}_${id}.bwa.sort.dedup.bam
     """
 }
 
 // indel realignment
 process indel_realign {
     cpus 16
+
     input:
     set group, val(type), val(id), file(bam), file(bai) from dedup_bam
+
     output:
-    set group, val(type), val(id), file("${type}_${id}.bwa.sort.dedup.realigned.bam"), file("${type}_${id}.bwa.sort.dedup.realigned.bam.bai") into realigned_bam
+    set group, val(type), val(id), file("${type}_${id}.bwa.sort.dedup.realigned.bam"), file("${type}_${id}.bwa.sort.dedup.realigned.bam.bai") into 
+    
     """
     sentieon driver -t ${task.cpus} -r $genome_file -i $bam --algo Realigner -k $known1_indels -k $known2_indels ${type}_${id}.bwa.sort.dedup.realigned.bam   
     """
@@ -176,10 +246,13 @@ process indel_realign {
 // calculate base quality score recalibration
 process bqsr {
     cpus 16
+
     input:
     set group, val(type), val(id), file(bam), file(bai) from realigned_bam
+
     output:
     set group, val(type), val(id), file(bam), file(bai), file("${type}_${id}.bqsr") into bqsr_table
+
     """
     sentieon driver -t ${task.cpus} -r $genome_file -i $bam --algo QualCal -k $known1_indels -k $known2_indels ${type}_${id}.bqsr
     """
@@ -189,15 +262,19 @@ process bqsr {
 process recal_bam {
     cpus 16
     publishDir "${outdir}/vcf/swea/", mode: 'copy', overwrite: 'true'
+
     input:
     set group, val(type), val(id), file(bam), file(bai), file(score) from bqsr_table
+
     output:
     set group, val(type), val(id), file("${type}_${id}.bwa.sort.dedup.realigned.recal.bam"), file("${type}_${id}.bwa.sort.dedup.realigned.recal.bam.bai"), file("${type}_${id}.bqsr.pdf") into bam_done
+
     """
     sentieon driver -t ${task.cpus} -r $genome_file -i $bam -q $score \\
-    --algo QualCal -k $known1_indels -k $known2_indels ${type}_${id}.recal_data.post --algo ReadWriter ${type}_${id}.bwa.sort.dedup.realigned.recal.bam
-    sentieon driver -t ${task.cpus} --algo QualCal --plot \\
-    --before $score --after ${type}_${id}.recal_data.post RECAL_RESULT.CSV
+        --algo QualCal -k $known1_indels -k $known2_indels ${type}_${id}.recal_data.post \\
+        --algo ReadWriter ${type}_${id}.bwa.sort.dedup.realigned.recal.bam
+    sentieon driver -t ${task.cpus} \\
+        --algo QualCal --plot --before $score --after ${type}_${id}.recal_data.post RECAL_RESULT.CSV
     sentieon plot QualCal -o ${type}_${id}.bqsr.pdf RECAL_RESULT.CSV
     """
 }
@@ -206,16 +283,25 @@ process recal_bam {
 process sentieon_qc {
     cpus 56
     memory '64 GB'
+
     input:
 	set group, type, id, file(bam), file(bai), file(depup) from bam_dedup_stats
+
     output:
     set group, type, id, file("${id}.QC") into qc_val
+
     """
-    sentieon driver -r $genome_file --interval $target_intervals -t ${task.cpus} -i ${bam} --algo MeanQualityByCycle mq_metrics.txt --algo QualDistribution qd_metrics.txt \\
-    --algo GCBias --summary gc_summary.txt gc_metrics.txt --algo AlignmentStat aln_metrics.txt --algo InsertSizeMetricAlgo is_metrics.txt \\
-    --algo HsMetricAlgo --targets_list $target_intervals --baits_list $target_intervals hs_metrics.txt \\
-    --algo CoverageMetrics --cov_thresh 1 --cov_thresh 10 --cov_thresh 30 --cov_thresh 100 --cov_thresh 250 --cov_thresh 500 cov_metrics.txt 
-    /fs1/pipelines/twist-brca/qc_sentieon.pl $id $type > ${id}.QC
+    sentieon driver \\
+        -r $genome_file --interval $target_intervals \\
+        -t ${task.cpus} -i ${bam} \\
+        --algo MeanQualityByCycle mq_metrics.txt \\
+        --algo QualDistribution qd_metrics.txt \\
+        --algo GCBias --summary gc_summary.txt gc_metrics.txt \\
+        --algo AlignmentStat aln_metrics.txt \\
+        --algo InsertSizeMetricAlgo is_metrics.txt \\
+        --algo HsMetricAlgo --targets_list $target_intervals --baits_list $target_intervals hs_metrics.txt \\
+        --algo CoverageMetrics --cov_thresh 1 --cov_thresh 10 --cov_thresh 30 --cov_thresh 100 --cov_thresh 250 --cov_thresh 500 cov_metrics.txt 
+    /fs1/pipelines/wgs_germline/annotation/qc_sentieon.pl $id panel > ${id}.QC
     """
 
 }
@@ -234,56 +320,81 @@ else {
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 process tnscope {
     cpus 16
+
     input:
     set group, type, id, file(bam), file(bai), file(plot) from bam_tnscope
+
     output:
     set group, file("${group}_tnscope.vcf") into tnscope_vcf
+
     script:
     if(mode == "paired") { 
-    tumor_index = bam.findIndexOf{ it ==~ /tumor_.+/ }
-    tumor = bam[tumor_index]
-    tumor_id = id[tumor_index]
-    normal_index = bam.findIndexOf{ it ==~ /normal_.+/ }
-    normal = bam[normal_index]
-    normal_id = id[normal_index]
-    """
-    sentieon driver -t ${task.cpus} -r $genome_file -i $tumor -i $normal --algo TNscope \\
-    --tumor_sample ${tumor_id}_tumor --normal_sample ${normal_id}_normal --cosmic $cosmic --dbsnp $dbsnp ${group}_tnscope.vcf.raw
-    /opt/bin/filter_mutect.pl ${group}_tnscope.vcf.raw > ${group}_tnscope.vcf
-    """
+        tumor_index = bam.findIndexOf{ it ==~ /tumor_.+/ }
+        tumor = bam[tumor_index]
+        tumor_id = id[tumor_index]
+        normal_index = bam.findIndexOf{ it ==~ /normal_.+/ }
+        normal = bam[normal_index]
+        normal_id = id[normal_index]
+
+        """
+        sentieon driver \\
+            -t ${task.cpus} \\
+            -r $genome_file \\
+            -i $tumor \\
+            -i $normal \\
+            --algo TNscope \\
+            --tumor_sample ${tumor_id}_tumor \\
+            --normal_sample ${normal_id}_normal \\
+            --cosmic $cosmic \\
+            --dbsnp $dbsnp \\
+            ${group}_tnscope.vcf.raw
+        /opt/bin/filter_mutect.pl ${group}_tnscope.vcf.raw > ${group}_tnscope.vcf
+        """
     }
     else {
-    """
-    sentieon driver -t ${task.cpus} -r $genome_file -i $bam --algo TNscope --tumor_sample $id --cosmic $cosmic --dbsnp $dbsnp ${group}_tnscope.vcf.raw
-    /opt/bin/filter_mutect_single.pl ${group}_tnscope.vcf.raw > ${group}_tnscope.vcf
-    """
+        """
+        sentieon driver \\
+            -t ${task.cpus} \\
+            -r $genome_file \\
+            -i $bam \\
+            --algo TNscope \\
+            --tumor_sample $id \\
+            --cosmic $cosmic \\
+            --dbsnp $dbsnp \\
+            ${group}_tnscope.vcf.raw
+        /opt/bin/filter_mutect_single.pl ${group}_tnscope.vcf.raw > ${group}_tnscope.vcf
+        """
     }
 }
 
 process freebayes{
     cpus 16
+
     input:
     set group, type, id, file(bam), file(bai), file(plot) from bam_freebayes
+
     output:
     set group, file("${group}_freebayes.vcf") into freebayes_vcf
+
     script:
     if(mode == "paired") { 
-    tumor_index = bam.findIndexOf{ it ==~ /tumor_.+/ }
-    tumor = bam[tumor_index]
-    tumor_id = id[tumor_index]
-    normal_index = bam.findIndexOf{ it ==~ /normal_.+/ }
-    normal = bam[normal_index]
-    normal_id = id[normal_index]
-    """
-    freebayes -f $genome_file -t $targets --pooled-continuous --pooled-discrete -F 0.03 $tumor $normal > ${group}__freebayes.vcf
-    vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__freebayes.vcf > ${group}_freebayes.vcf
-    """
+        tumor_index = bam.findIndexOf{ it ==~ /tumor_.+/ }
+        tumor = bam[tumor_index]
+        tumor_id = id[tumor_index]
+        normal_index = bam.findIndexOf{ it ==~ /normal_.+/ }
+        normal = bam[normal_index]
+        normal_id = id[normal_index]
+        
+        """
+        freebayes -f $genome_file -t $targets --pooled-continuous --pooled-discrete -F 0.03 $tumor $normal > ${group}__freebayes.vcf
+        vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__freebayes.vcf > ${group}_freebayes.vcf
+        """
     }
     else {
-    """
-    freebayes -f $genome_file -C 2 -F 0.01 --pooled-continuous --genotype-qualities -t $targets $bam > ${group}__freebayes.vcf
-    vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__freebayes.vcf > ${group}_freebayes.vcf
-    """
+        """
+        freebayes -f $genome_file -C 2 -F 0.01 --pooled-continuous --genotype-qualities -t $targets $bam > ${group}__freebayes.vcf
+        vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__freebayes.vcf > ${group}_freebayes.vcf
+        """
     }
     // add multithreading
     // freebayes-parallel <(fasta_generate_regions.py $genome_file_fai 100000) 36 -f ref.fa aln.bam > out.vcf
@@ -291,32 +402,50 @@ process freebayes{
 
 process manta {
     cpus 16
+
     input:
     set group, type, id, file(bam), file(bai), file(plot) from bam_manta
+
     output:
     set group, file("${group}_manta.vcf") into manta_vcf
+
     when:
     params.manta
+    
     script:
     if(mode == "paired") { 
-    tumor_index = bam.findIndexOf{ it ==~ /tumor_.+/ }
-    tumor = bam[tumor_index]
-    tumor_id = id[tumor_index]
-    normal_index = bam.findIndexOf{ it ==~ /normal_.+/ }
-    normal = bam[normal_index]
-    normal_id = id[normal_index]
-    """
-    configManta.py --tumorBam $tumor --normalBam $normal --reference $genome_file --exome --callRegions $targets_zip --generateEvidenceBam --runDir .
-    python runWorkflow.py -m local -j ${task.cpus}
-    /opt/bin/filter_manta.pl results/variants/somaticSV.vcf.gz > ${group}_manta.vcf
-    """
+        tumor_index = bam.findIndexOf{ it ==~ /tumor_.+/ }
+        tumor = bam[tumor_index]
+        tumor_id = id[tumor_index]
+        normal_index = bam.findIndexOf{ it ==~ /normal_.+/ }
+        normal = bam[normal_index]
+        normal_id = id[normal_index]
+
+        """
+        configManta.py \\
+            --tumorBam $tumor \\
+            --normalBam $normal \\
+            --reference $genome_file \\
+            --exome \\
+            --callRegions $targets_zip \\
+            --generateEvidenceBam \\
+            --runDir .
+        python runWorkflow.py -m local -j ${task.cpus}
+        /opt/bin/filter_manta.pl results/variants/somaticSV.vcf.gz > ${group}_manta.vcf
+        """
     }
     else {
-    """
-    configManta.py --tumorBam $tumor --reference $genome_file --exome --callRegions $targets_zip --generateEvidenceBam --runDir .
-    python runWorkflow.py -m local -j ${task.cpus}
-    /opt/bin/filter_manta.pl results/variants/tumorSV.vcf.gz > ${group}_manta.vcf
-    """
+        """
+        configManta.py \\
+            --tumorBam $tumor \\
+            --reference $genome_file \\
+            --exome \\
+            --callRegions $targets_zip \\
+            --generateEvidenceBam \\
+            --runDir .
+        python runWorkflow.py -m local -j ${task.cpus}
+        /opt/bin/filter_manta.pl results/variants/tumorSV.vcf.gz > ${group}_manta.vcf
+        """
     }
 
 }
@@ -326,20 +455,24 @@ qc_val
     .set{ qc_tables }
 process melt {
     cpus 16
+    
     input:
     set group, type, id, file(bam), file(bai), file(plot) from bam_melt
     set group2, type2, id2, qc from qc_tables
+
     when:
     params.melt
+
     output:
     set group, file("${group}_melt.vcf") into melt_vcf
+
     script:
     if(mode == "paired") { 
-    normal_index = bam.findIndexOf{ it ==~ /normal_.+/ }
-    normal = bam[normal_index]
-    normal_id = id[normal_index]
-    qc_index = type2.findIndexOf{ it ==~ /normal/ }
-    qc = qc[qc_index]
+        normal_index = bam.findIndexOf{ it ==~ /normal_.+/ }
+        normal = bam[normal_index]
+        normal_id = id[normal_index]
+        qc_index = type2.findIndexOf{ it ==~ /normal/ }
+        qc = qc[qc_index]
     }
     // Collect qc-data if possible from normal sample, if only tumor; tumor
     qc.readLines().each{
@@ -357,12 +490,20 @@ process melt {
     INS_SIZE = ins_size[0][2]
     MEAN_DEPTH = coverage[0][2]
     COV_DEV = ins_dev[0][2]
+
     """
-    java -jar  /opt/MELT.jar Single -bamfile $bam -r 150 -h $genome_file \\
-    -n  $bed_melt -z 50000 \\
-    -d 50 -t $mei_list -w . \\
-    -b 1/2/3/4/5/6/7/8/9/10/11/12/14/15/16/18/19/20/21/22 \\
-    -c $MEAN_DEPTH -cov $COV_DEV -e $INS_SIZE
+    java -jar  /opt/MELT.jar Single \\
+        -bamfile $bam \\
+        -r 150 \\
+        -h $genome_file \\
+        -n  $bed_melt \\
+        -z 50000 \\
+        -d 50 -t $mei_list \\
+        -w . \\
+        -b 1/2/3/4/5/6/7/8/9/10/11/12/14/15/16/18/19/20/21/22 \\
+        -c $MEAN_DEPTH \\
+        -cov $COV_DEV \\
+        -e $INS_SIZE
     mv ALU.final_comp.vcf ${group}_melt.vcf
     """
 
@@ -377,8 +518,10 @@ tnscope_vcf
 // Post-processing of variant callers
 process normalize {
     cpus 16
+
     input:
     set group, file(vcf) from vcfs
+
     output:
     set group, file("${vcf}.norm") into norm_vcf
 
@@ -392,39 +535,45 @@ process normalize {
 process annotate_vep {
     container = '/fs1/resources/containers/container_VEP.sif'
     cpus 56
+
     input:
     set group, file(vcf) from norm_vcf
+
     output:
     set group, file("${vcf}.vep") into vep
+
     """
     vep \\
-    -i ${vcf} \\
-    -o ${vcf}.vep \\
-    --offline \\
-    --merged \\
-    --everything \\
-    --vcf \\
-    --format vcf  \\
-    --no_stats \\
-    --fork ${task.cpus} \\
-    --force_overwrite \\
-    --plugin CADD,$cadd \\
-    --fasta $vep_fasta \\
-    --dir_cache $vep_cache \\
-    --dir_plugins $vep_cache/Plugins \\
-    --distance 200 \\
-    -cache \\
-    -custom $gnomad
+        -i ${vcf} \\
+        -o ${vcf}.vep \\
+        --offline \\
+        --merged \\
+        --everything \\
+        --vcf \\
+        --format vcf  \\
+        --no_stats \\
+        --fork ${task.cpus} \\
+        --force_overwrite \\
+        --plugin CADD,$cadd \\
+        --fasta $vep_fasta \\
+        --dir_cache $vep_cache \\
+        --dir_plugins $vep_cache/Plugins \\
+        --distance 200 \\
+        -cache \\
+        -custom $gnomad
     """
 }
 
 process bgzip_index {
     cpus 16
     publishDir "${outdir}/vcf/swea/", mode: 'copy', overwrite: 'true'
+
     input:
     set group, file(vcf) from vep
+
     output:
     set group, file("${vcf}.gz"), file("${vcf}.gz.tbi") into vcf_done
+    
     """
     bgzip -@ ${task.cpus} $vcf -f
     tabix ${vcf}.gz -f
