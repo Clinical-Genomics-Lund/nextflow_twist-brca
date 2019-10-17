@@ -1,0 +1,22 @@
+--- ConsensusCruncher.py	2019-10-17 14:02:06.553727553 +0200
++++ ConsensusCruncher_2.py	2019-10-17 14:40:46.202387810 +0200
+@@ -21,8 +21,8 @@
+     identifier = bam.split('.bam', 1)[0]
+     sorted_bam = '{}.sorted.bam'.format(identifier)
+ 
+-    sam1 = Popen((samtools + ' view -bu ' + bam).split(' '), stdout=PIPE)
+-    sam2 = Popen((samtools + ' sort -').split(' '), stdin=sam1.stdout, stdout=open(sorted_bam, 'w'))
++    sam1 = Popen((samtools + ' view -bu -@ 20 ' + bam).split(' '), stdout=PIPE)
++    sam2 = Popen((samtools + ' sort -@ 20 - ').split(' '), stdin=sam1.stdout, stdout=open(sorted_bam, 'w'))
+     sam2.communicate()
+     os.remove(bam)
+     call("{} index {}".format(samtools, sorted_bam).split(' '))
+@@ -102,7 +102,7 @@
+     # BWA Align #
+     #############
+     # Command split into chunks and bwa_id retained as str repr
+-    bwa_cmd = args.bwa + ' mem -M -t4 -R'
++    bwa_cmd = args.bwa + ' mem -M -t30 -R'
+     bwa_id = "@RG\tID:1\tSM:" + filename + "\tPL:Illumina"
+     bwa_args = '{} {}_barcode_R1.fastq {}_barcode_R2.fastq'.format(args.ref, outfile, outfile)
+ 
