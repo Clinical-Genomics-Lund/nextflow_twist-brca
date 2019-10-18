@@ -200,7 +200,7 @@ process SamToFastq2 {
 		set group, val(type), val(id), file(bam) from consensus
 
 	output:
-		set group, val(type), val(id), file("pool1_consensus.aligned.bam"), file("pool1_consensus.aligned.bai") into bams
+		set group, val(type), val(id), file("pool1_consensus.aligned.bam"), file("pool1_consensus.aligned.bai") into bams, qc_bam
 
 	"""
 	picard -Xmx60g -XX:ParallelGCThreads=56 -Djava.io.tmpdir=. SamToFastq \\
@@ -239,32 +239,32 @@ process SamToFastq2 {
 }
 
 
-// locus collector + dedup of bam
-process locus_collector_dedup {
-	cpus 16
+// // locus collector + dedup of bam
+// process locus_collector_dedup {
+// 	cpus 16
 
-	input:
-		set group, val(type), val(id), file(bam), file(bai) from bams
+// 	input:
+// 		set group, val(type), val(id), file(bam), file(bai) from bams
 
-	output:
-		set group, val(type), val(id), file("${type}_${id}.bwa.sort.dedup.bam"), file("${type}_${id}.bwa.sort.dedup.bam.bai") into dedup_bam
-		set group, val(type), val(id), file(bam), file(bai), file("dedup_metrics.txt") into bam_dedup_stats
+// 	output:
+// 		set group, val(type), val(id), file("${type}_${id}.bwa.sort.dedup.bam"), file("${type}_${id}.bwa.sort.dedup.bam.bai") into dedup_bam
+// 		set group, val(type), val(id), file(bam), file(bai), file("dedup_metrics.txt") into bam_dedup_stats
 
-	"""
-	sentieon driver -t ${task.cpus} -i $bam \\
-		--algo LocusCollector --fun score_info ${type}_score.gz
-	sentieon driver -t ${task.cpus} -i $bam \\
-		--algo Dedup --rmdup --score_info ${type}_score.gz \\
-		--metrics dedup_metrics.txt ${type}_${id}.bwa.sort.dedup.bam
-	"""
-}
+// 	"""
+// 	sentieon driver -t ${task.cpus} -i $bam \\
+// 		--algo LocusCollector --fun score_info ${type}_score.gz
+// 	sentieon driver -t ${task.cpus} -i $bam \\
+// 		--algo Dedup --rmdup --score_info ${type}_score.gz \\
+// 		--metrics dedup_metrics.txt ${type}_${id}.bwa.sort.dedup.bam
+// 	"""
+// }
 
 // indel realignment
 process indel_realign {
 	cpus 16
 
 	input:
-		set group, val(type), val(id), file(bam), file(bai) from dedup_bam
+		set group, val(type), val(id), file(bam), file(bai) from bams
 
 	output:
 		set group, val(type), val(id), file("${type}_${id}.bwa.sort.dedup.realigned.bam"), file("${type}_${id}.bwa.sort.dedup.realigned.bam.bai") into realigned_bam
@@ -302,7 +302,7 @@ process bqsr {
 // apply bqsr to bam and plot before and after
 process recal_bam {
 	cpus 16
-	publishDir "${outdir}/vcf/swea/", mode: 'copy', overwrite: 'true'
+	publishDir "${outdir}/bam/twist-brca/", mode: 'copy', overwrite: 'true'
 
 	input:
 		set group, val(type), val(id), file(bam), file(bai), file(score) from bqsr_table
@@ -324,9 +324,10 @@ process recal_bam {
 process sentieon_qc {
 	cpus 40
 	memory '64 GB'
+	publishDir "${outdir}/postmap/twist-brca/", mode: 'copy', overwrite: 'true'
 
 	input:
-		set group, type, id, file(bam), file(bai), file(depup) from bam_dedup_stats
+		set group, type, id, file(bam), file(bai) from qc_bam
 
 	output:
 		set group, type, id, file("${id}.QC") into qc_val
@@ -388,8 +389,8 @@ process tnscope {
 				--normal_sample ${normal_id}_normal \\
 				--cosmic $cosmic \\
 				--dbsnp $dbsnp \\
-				${group}_tnscope.vcf.raw
-			/opt/bin/filter_mutect.pl ${group}_tnscope.vcf.raw > ${group}_tnscope.vcf
+				${group}_tnscope.vcf
+			#/opt/bin/filter_mutect.pl ${group}_tnscope.vcf.raw > ${group}_tnscope.vcf
 			"""
 		}
 		else {
@@ -402,15 +403,15 @@ process tnscope {
 				--tumor_sample $id \\
 				--cosmic $cosmic \\
 				--dbsnp $dbsnp \\
-				${group}_tnscope.vcf.raw
-			/opt/bin/filter_mutect_single.pl ${group}_tnscope.vcf.raw > ${group}_tnscope.vcf
+				${group}_tnscope.vcf
+			#/opt/bin/filter_mutect_single.pl ${group}_tnscope.vcf.raw > ${group}_tnscope.vcf
 			"""
 		}
 }
 
 process freebayes{
 	cpus 16
-
+	
 	input:
 		set group, type, id, file(bam), file(bai), file(plot) from bam_freebayes
 		each file(bed) from beds_freebayes;
@@ -427,14 +428,14 @@ process freebayes{
 			normal_id = id[normal_index]
 			
 			"""
-			freebayes -f $genome_file -t $bed --pooled-continuous --pooled-discrete -F 0.03 $tumor $normal > ${group}__freebayes.vcf
-			vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__freebayes.vcf > ${group}_${bed}_freebayes.vcf
+			freebayes -f $genome_file -t $bed --pooled-continuous --pooled-discrete -F 0.03 $tumor $normal > ${group}_${bed}_freebayes.vcf
+			#vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__freebayes.vcf > ${group}_${bed}_freebayes.vcf
 			"""
 		}
 		else {
 			"""
-			freebayes -f $genome_file -C 2 -F 0.01 --pooled-continuous --genotype-qualities -t $bed $bam > ${group}__freebayes.vcf
-			vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__freebayes.vcf > ${group}_${bed}_freebayes.vcf
+			freebayes -f $genome_file -C 2 -F 0.01 --pooled-continuous --genotype-qualities -t $bed $bam > ${group}_${bed}_freebayes.vcf
+			#vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__freebayes.vcf > ${group}_${bed}_freebayes.vcf
 			"""
 		}
 }
@@ -454,7 +455,7 @@ process concatenate_vcfs {
 // MANTA SINGLE AND PAIRED
 process manta {
 	cpus 16
-
+	
 	input:
 		set group, type, id, file(bam), file(bai), file(plot) from bam_manta
 
@@ -483,7 +484,9 @@ process manta {
 				--generateEvidenceBam \\
 				--runDir .
 			python runWorkflow.py -m local -j ${task.cpus}
-			/opt/bin/filter_manta.pl results/variants/somaticSV.vcf.gz > ${group}_manta.vcf
+			#/opt/bin/filter_manta.pl results/variants/somaticSV.vcf.gz > ${group}_manta.vcf
+			mv results/variants/tumorSV.vcf.gz ${group}_manta.vcf.gz
+			gunzip ${group}_manta.vcf.gz
 			"""
 		}
 		else {
@@ -496,7 +499,9 @@ process manta {
 				--generateEvidenceBam \\
 				--runDir .
 			python runWorkflow.py -m local -j ${task.cpus}
-			/opt/bin/filter_manta.pl results/variants/tumorSV.vcf.gz > ${group}_manta.vcf
+			#/opt/bin/filter_manta.pl results/variants/tumorSV.vcf.gz > ${group}_manta.vcf
+			mv results/variants/tumorSV.vcf.gz ${group}_manta.vcf.gz
+			gunzip ${group}_manta.vcf.gz
 			"""
 		}
 }
@@ -506,7 +511,8 @@ qc_val
 	.set{ qc_tables }
 process melt {
 	cpus 16
-	
+	errorStrategy 'ignore'
+
 	input:
 		set group, type, id, file(bam), file(bai), file(plot) from bam_melt
 		set group2, type2, id2, qc from qc_tables
@@ -524,6 +530,9 @@ process melt {
 			normal_id = id[normal_index]
 			qc_index = type2.findIndexOf{ it ==~ /normal/ }
 			qc = qc[qc_index]
+		}
+		else {
+			qc = qc[0]
 		}
 		// Collect qc-data if possible from normal sample, if only tumor; tumor
 		qc.readLines().each{
@@ -547,7 +556,7 @@ process melt {
 		-bamfile $bam \\
 		-r 150 \\
 		-h $genome_file \\
-		-n  $bed_melt \\
+		-n $bed_melt \\
 		-z 50000 \\
 		-d 50 -t $mei_list \\
 		-w . \\
@@ -575,6 +584,7 @@ process normalize {
 
 	output:
 		set group, file("${vcf}.norm") into norm_vcf
+
 
 	"""
 	vcfbreakmulti $vcf > ${group}.multibreak
@@ -617,7 +627,7 @@ process annotate_vep {
 
 process bgzip_index {
 	cpus 16
-	publishDir "${outdir}/vcf/swea/", mode: 'copy', overwrite: 'true'
+	publishDir "${outdir}/vcf/twist-brca/", mode: 'copy', overwrite: 'true'
 
 	input:
 		set group, file(vcf) from vep
