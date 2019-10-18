@@ -183,7 +183,7 @@ process CollectDuplexSeqMetrics {
 		set group, val(type), val(id), file(bam) from grouped_umi2
 
 	output:
-		set group, val(type), val(id), file("${id}_metrics*") into seqmetrics
+		set group, val(type), val(id), file("${id}_metrics.family_sizes.txt"), file("${id}_metrics.duplex_family_sizes.txt") into seqmetrics
 
 	"""
 	fgbio --tmp-dir=. -Xmx60g CollectDuplexSeqMetrics \\
@@ -192,6 +192,22 @@ process CollectDuplexSeqMetrics {
 	"""
 }
 
+process evaluate_umi {
+	cpus 16
+
+	input:
+		set group, val(type), val(id), file(family_sizes), file(duplex_sizes) from seqmetrics
+	
+	output:
+		//set group, val(type), val(id), val(ok) into eval_umi
+
+	script:
+
+
+	"""
+	
+	"""
+}
 
 process SamToFastq2 {
 	cpus 40
