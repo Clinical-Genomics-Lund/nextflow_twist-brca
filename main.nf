@@ -24,7 +24,15 @@ known1_indels = params.known1
 known2_indels = params.known2
 dbsnp = params.dbsnp
 cosmic = params.cosmic
+reads = params.reads
 ////////////////////////////////////////
+
+// Define $reads for Call Consensus Duplex --reads, if not defined use default
+if (!params.reads) {
+	reads = "1 1 0"
+}
+println(reads)
+
 
 csv = file(params.csv)
 mode = csv.countLines() > 2 ? "paired" : "single"
@@ -167,12 +175,16 @@ process CallDuplexConsensusReads {
 	output:
 		set group, val(type), val(id), file("${bam}.consensus") into consensus
 
+	script:
+		cons = reads.split(',')
+		cons = cons.join(' ')
+
 	"""
 	fgbio --tmp-dir=/tmp/ -Xmx60g CallDuplexConsensusReads \\
 		--input=$bam \\
 		--output=${bam}.consensus \\
 		--threads=${task.cpus} \\
-		--min-reads=3 2 1
+		--min-reads=$cons
 	"""
 }
 
