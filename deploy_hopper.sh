@@ -9,6 +9,8 @@ scp $DIR/main.nf $PIPELINE_DEST
 # Copy configuration file
 scp $DIR/configs/nextflow.hopper.config $PIPELINE_DEST/nextflow.config
 
+# Update bin-folder from github
+. bin-update.sh
 # Copy other files
 scp -r $DIR/bin $PIPELINE_DEST
 

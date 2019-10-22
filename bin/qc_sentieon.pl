@@ -33,7 +33,7 @@ my $type = $ARGV[1];
 my %pct_above_x;
 my $median;
 my $pct_above_panel;
-if ($type eq "panel") {
+if ($type eq "panel" || $type eq "umi" ) {
 
     ($pct_above_panel, $median) = coverage_calc();
     %pct_above_x = %$pct_above_panel;
@@ -85,7 +85,7 @@ elsif ($type eq "panel" || $type eq "umi") {
 	    <HS>;
             my $vals = <HS>;
             my @a = split /\t/, $vals;
-            $results{'pct_on_target'} = $a[18];
+            $results{'pct_on_target'} = $a[24];
             #print "pct_on_target: $a[18]\n";
             $results{'fold_enrichment'} = $a[25];
             #print "fold_enrichment: $a[25]\n";

@@ -1,31 +1,37 @@
 #!/usr/bin/env nextflow
 
-
-
-// global variables /////////////////
-/////////////////////////////////////
-outdir = params.outdir
+// BED AND TARGETS //
 targets = params.targets
 targets_zip = params.targets_zip
 targets_brca12 = params.targets_brca12
 target_intervals = params.target_intervals
 bed_melt = params.bed_melt
-mei_list = params.mei_list
+
+// FASTA //
 genome_file = params.genome_file
-genome_file_fai = params.genome_file_fai
+
+// VEP FASTA AND ANNOTATIONS DBS //
 cadd = params.cadd
 vep_fasta = params.vep_fasta
 vep_cache = params.vep_cache
 gnomad = params.gnomad
-swegen = params.swegen
-sentieon_model = params.sentieon_model
+
+// ADAPTORS FOR TRIMMOMATIC //
 brca_adapt = params.brca_adapt
+
+// ANNOTATION DBS //
 known1_indels = params.known1
 known2_indels = params.known2
 dbsnp = params.dbsnp
 cosmic = params.cosmic
+swegen = params.swegen
+
+// PIPELINE CONFIGS //
 reads = params.reads
-////////////////////////////////////////
+mei_list = params.mei_list
+outdir = params.outdir
+
+////////////////////////////////////
 
 // Define $reads for Call Consensus Duplex --reads, if not defined use default
 if (!params.reads) {
@@ -355,7 +361,7 @@ process sentieon_qc {
 		--algo InsertSizeMetricAlgo is_metrics.txt \\
 		--algo HsMetricAlgo --targets_list $target_intervals --baits_list $target_intervals hs_metrics.txt \\
 		--algo CoverageMetrics --cov_thresh 1 --cov_thresh 10 --cov_thresh 30 --cov_thresh 100 --cov_thresh 250 --cov_thresh 500 cov_metrics.txt 
-	/fs1/pipelines/wgs_germline/annotation/qc_sentieon.pl $id panel > ${id}.QC
+	qc_sentieon.pl $id umi > ${id}.QC
 	"""
 
 }
@@ -653,20 +659,20 @@ process bgzip_index {
 	"""
 }
 
-// process aggregate_vcf {
-//     input:
-//     set group, file(vcf), file(tbi) from vcf_done.groupTuple()
-//     output:
-//     script:
-//     manta_index = vcf.findIndexOf{ it ==~ /manta/ }
-//     freebayes_index = vcf.findIndexOf{ it ==~ /freebayes/ }
-//     tnscope_index = vcf.findIndexOf{ it ==~ /tnscope/ }
-//     freebayes = vcf[freebayes_index]
-//     mutect = vcf[tnscope_index]
-//     manta = vcf[manta_index]
-//     """
-//     /opt/bin/aggregate_vcf.pl --freebayes $freebayes --mutect $mutect --manta $manta --base freebayes > ${group}_aggregated.vcf
-//     """
-// }
+process aggregate_vcf {
+    input:
+    set group, file(vcf), file(tbi) from vcf_done.groupTuple()
+    output:
+    script:
+    manta_index = vcf.findIndexOf{ it ==~ /_manta_/ }
+    freebayes_index = vcf.findIndexOf{ it ==~ /_freebayes_/ }
+    tnscope_index = vcf.findIndexOf{ it ==~ /_tnscope_/ }
+    freebayes = vcf[freebayes_index]
+    tnscope = vcf[tnscope_index]
+    manta = vcf[manta_index]
+    """
+    aggregate_vcf.pl --freebayes $freebayes --tnscope $tnscope --manta $manta --base freebayes > ${group}_aggregated.vcf
+    """
+}
 
 
