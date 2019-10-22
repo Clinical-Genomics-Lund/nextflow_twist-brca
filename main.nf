@@ -660,16 +660,22 @@ process bgzip_index {
 }
 
 process aggregate_vcf {
+	publishDir "${outdir}/vcf/twist-brca/", mode: 'copy', overwrite: 'true'
+
     input:
-    set group, file(vcf), file(tbi) from vcf_done.groupTuple()
+    	set group, file(vcf), file(tbi) from vcf_done.groupTuple()
+
     output:
+		file("${group}_aggregated.vcf")
+
     script:
-    manta_index = vcf.findIndexOf{ it ==~ /_manta_/ }
-    freebayes_index = vcf.findIndexOf{ it ==~ /_freebayes_/ }
-    tnscope_index = vcf.findIndexOf{ it ==~ /_tnscope_/ }
-    freebayes = vcf[freebayes_index]
-    tnscope = vcf[tnscope_index]
-    manta = vcf[manta_index]
+		manta_index = vcf.findIndexOf{ it ==~ /.+_manta\..+/ }
+		freebayes_index = vcf.findIndexOf{ it ==~ /.+_freebayes_.+/ }
+		tnscope_index = vcf.findIndexOf{ it ==~ /.+_tnscope\..+/ }
+		freebayes = vcf[freebayes_index]
+		tnscope = vcf[tnscope_index]
+		manta = vcf[manta_index]
+
     """
     aggregate_vcf.pl --freebayes $freebayes --tnscope $tnscope --manta $manta --base freebayes > ${group}_aggregated.vcf
     """
