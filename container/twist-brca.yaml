@@ -28,5 +28,6 @@ dependencies:
     - bioconda::snpsift=4.3
     - bioconda::r-exomedepth=1.1.12
     - perl-app-cpanminus
+    - bioconda::fastp=0.20.0
 
     
