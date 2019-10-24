@@ -27,17 +27,10 @@ cosmic = params.cosmic
 swegen = params.swegen
 
 // PIPELINE CONFIGS //
-reads = params.reads
 mei_list = params.mei_list
 outdir = params.outdir
 
 ////////////////////////////////////
-
-// Define $reads for Call Consensus Duplex --reads, if not defined use default
-if (!params.reads) {
-	reads = "1 1 0"
-}
-println(reads)
 
 
 csv = file(params.csv)
@@ -57,232 +50,85 @@ Channel
 	.map{ row-> tuple( row.group, row.type, row.id, row.read1, row.read2 ) }
 	.set { fastq }
 
-process fq2sam {
+// trimming adapter sequences, TODO: HEADCROP:5 for twist-data (UMIs)
+process trimmomatic {
 	cpus 40
 
 	input:
 		set group, val(type), val(id), r1, r2 from fastq
 
 	output:
-		set group, val(type), val(id), file("${id}_${type}.unaligned") into unaligned1
+		set group, val(type), val(id), file("${type}_R1_a_q_u_trimmed.fq.gz"),file("${type}_R2_a_q_u_trimmed.fq.gz") into fastq_trimmed
 
 	"""
-	picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. FastqToSam \\
-		O=${id}_${type}.unaligned \\
-		F1=$r1 \\
-		F2=$r2 \\
-		SM=$id \\
-		LB=$id \\
-		PU=CMD \\
-		PL=illumina 
+	trimmomatic -Xmx12g PE -phred33 -threads ${task.cpus} \\
+		$r1 $r2 \\
+		${type}_R1_a_trimmed.fq.gz /dev/null \\
+		${type}_R2_a_trimmed.fq.gz /dev/null \\
+		ILLUMINACLIP:$brca_adapt:3:12:7:1:true MINLEN:30
+	trimmomatic -Xmx12G PE -phred33 -threads ${task.cpus} \\
+		${type}_R1_a_trimmed.fq.gz ${type}_R2_a_trimmed.fq.gz \\
+		${type}_R1_a_q_trimmed.fq.gz /dev/null \\
+		${type}_R2_a_q_trimmed.fq.gz /dev/null \\
+		MAXINFO:30:0.25 MINLEN:30
+	trimmomatic -Xmx12G PE -phred33 -threads ${task.cpus} \\
+		${type}_R1_a_q_trimmed.fq.gz ${type}_R2_a_q_trimmed.fq.gz \\
+		${type}_R1_a_q_u_trimmed.fq.gz /dev/null \\
+		${type}_R2_a_q_u_trimmed.fq.gz /dev/null \\
+		HEADCROP:5
 	"""
 }
 
-process ExtractUmisFromBam {
+// aligning with sentieon bwa
+process sentieon_bwa {
 	cpus 40
 
 	input:
-		set group, val(type), val(id), file(sam) from unaligned1
+		set group, val(type), id, file(r1), file(r2) from fastq_trimmed
 
 	output:
-		set group, val(type), val(id), file("${sam}.umi") into umi_unaligned
+		set group, type, id, file("${type}_${id}.bwa.sort.bam"), file("${type}_${id}.bwa.sort.bam.bai") into bams, qc_bam
 
 	"""
-	fgbio --tmp-dir=. ExtractUmisFromBam \\
-		--input=$sam \\
-		--output=${sam}.umi \\
-		--read-structure=3M2S146T 3M2S146T \\
-		--molecular-index-tags=ZA ZB \\
-		--single-tag=RX
+	sentieon bwa mem -M \\
+		-R '@RG\\tID:${id}_${type}\\tSM:${id}_${type}\\tPL:illumina' \\
+		-t ${task.cpus} \\
+		$genome_file \\
+		${r1} ${r2} | \\
+		sentieon util sort \\
+		-r $genome_file \\
+		-o ${type}_${id}.bwa.sort.bam \\
+		-t ${task.cpus} \\
+		--sam2bam -i -
 	"""
-
 }
 
-process MarkIlluminaAdapters {
-	cpus 40
+// locus collector + dedup of bam
+process locus_collector_dedup {
+	cpus 16
 
 	input:
-		set group, val(type), val(id), file(sam) from umi_unaligned
+		set group, val(type), val(id), file(bam), file(bai) from bams
 
 	output:
-		set group, val(type), val(id), file("${sam}.marked") into markedadapt
+		set group, val(type), val(id), file("${type}_${id}.bwa.sort.dedup.bam"), file("${type}_${id}.bwa.sort.dedup.bam.bai") into dedup_bam
+		set group, val(type), val(id), file(bam), file(bai), file("dedup_metrics.txt") into bam_dedup_stats
 
 	"""
-	picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. MarkIlluminaAdapters \\
-		I=$sam \\
-		O=${sam}.marked M=adapterMetrics.txt
-	"""
-}
-
-process SamToFastq {
-	cpus 40
-
-	input:
-		set group, val(type), val(id), file(sam) from markedadapt
-
-	output:
-		set group, val(type), val(id), file("${sam}.aligned") into fastq2
-
-	"""
-	picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. SamToFastq \\
-		I=$sam \\
-		CLIPPING_ATTRIBUTE=XT \\
-		CLIPPING_ACTION=X \\
-		CLIPPING_MIN_LENGTH=36 \\
-		NON_PF=true \\
-		F=/dev/stdout \\
-		INTERLEAVE=true \\
-	| sentieon bwa mem -M -t ${task.cpus} $genome_file -p /dev/stdin \\
-	| picard -Xmx60g -XX:ParallelGCThreads=${task.cpus} -Djava.io.tmpdir=. MergeBamAlignment \\
-		UNMAPPED=$sam \\
-		ALIGNED=/dev/stdin \\
-		O=${sam}.aligned \\
-		R=$genome_file \\
-		CLIP_ADAPTERS=false \\
-		VALIDATION_STRINGENCY=SILENT \\
-		CREATE_INDEX=true \\
-		EXPECTED_ORIENTATIONS=FR \\
-		MAX_GAPS=-1 \\
-		SO=coordinate \\
-		ALIGNER_PROPER_PAIR_FLAGS=false
+	sentieon driver -t ${task.cpus} -i $bam \\
+		--algo LocusCollector --fun score_info ${type}_score.gz
+	sentieon driver -t ${task.cpus} -i $bam \\
+		--algo Dedup --rmdup --score_info ${type}_score.gz \\
+		--metrics dedup_metrics.txt ${type}_${id}.bwa.sort.dedup.bam
 	"""
 }
-
-
-process GroupReadsByUmi {
-	cpus 40
-
-	input:
-		set group, val(type), val(id), file(bam) from fastq2
-
-	output:
-		set group, val(type), val(id), file("${bam}.grouped") into grouped_umi
-
-	"""
-	fgbio --tmp-dir=. -Xmx60g GroupReadsByUmi \\
-		--strategy=paired \\
-		--input=$bam \\
-		--output=${bam}.grouped \\
-		--raw-tag=RX \\
-		--assign-tag=MI \\
-		--min-map-q=10 \\
-		--edits=1
-	"""
-}
-grouped_umi
-	.into { grouped_umi1; grouped_umi2 }
-process CallDuplexConsensusReads {
-	cpus 20
-	memory '120 GB'
-
-	input:
-		set group, val(type), val(id), file(bam) from grouped_umi1
-
-	output:
-		set group, val(type), val(id), file("${bam}.consensus") into consensus
-
-	script:
-		cons = reads.split(',')
-		cons = cons.join(' ')
-
-	"""
-	fgbio --tmp-dir=/tmp/ -Xmx60g CallDuplexConsensusReads \\
-		--input=$bam \\
-		--output=${bam}.consensus \\
-		--threads=${task.cpus} \\
-		--min-reads=$cons
-	"""
-}
-
-process CollectDuplexSeqMetrics {
-	cpus 40
-
-	input:
-		set group, val(type), val(id), file(bam) from grouped_umi2
-
-	output:
-		set group, val(type), val(id), file("${id}_metrics*") into seqmetrics
-
-	"""
-	fgbio --tmp-dir=. -Xmx60g CollectDuplexSeqMetrics \\
-		--input=$bam \\
-		--output=${id}_metrics
-	"""
-}
-
-//#> tmp.aligned.bam
-process SamToFastq2 {
-	cpus 40
-
-	input:
-		set group, val(type), val(id), file(bam) from consensus
-
-	output:
-		set group, val(type), val(id), file("pool1_consensus.aligned.bam"), file("pool1_consensus.aligned.bai") into bams, qc_bam
-
-	"""
-	picard -Xmx60g -XX:ParallelGCThreads=56 -Djava.io.tmpdir=. SamToFastq \\
-		VALIDATION_STRINGENCY=SILENT \\
-		I=$bam \\
-		F=/dev/stdout \\
-		INTERLEAVE=true \\
-		INCLUDE_NON_PF_READS=true \\
-		CREATE_INDEX=true \\
-		| sentieon bwa mem -M -t ${task.cpus} $genome_file -p /dev/stdin \\
-		| picard -Xmx60g -Djava.io.tmpdir=. MergeBamAlignment \\
-		VALIDATION_STRINGENCY=SILENT \\
-		UNMAPPED=$bam \\
-		ALIGNED=/dev/stdin \\
-		OUTPUT=pool1_consensus.aligned.bam \\
-		R=$genome_file \\
-		CLIP_ADAPTERS=false \\
-		CREATE_INDEX=true \\
-		ORIENTATIONS=FR \\
-		MAX_GAPS=-1 \\
-		SO=coordinate \\
-		ALIGNER_PROPER_PAIR_FLAGS=false \\
-		ATTRIBUTES_TO_RETAIN=X0 \\
-		ATTRIBUTES_TO_RETAIN=ZS \\
-		ATTRIBUTES_TO_RETAIN=ZI \\
-		ATTRIBUTES_TO_RETAIN=ZM \\
-		ATTRIBUTES_TO_RETAIN=ZC \\
-		ATTRIBUTES_TO_RETAIN=ZN \\
-		ATTRIBUTES_TO_REVERSE=ad \\
-		ATTRIBUTES_TO_REVERSE=bd \\
-		ATTRIBUTES_TO_REVERSE=cd \\
-		ATTRIBUTES_TO_REVERSE=ae \\
-		ATTRIBUTES_TO_REVERSE=be \\
-		ATTRIBUTES_TO_REVERSE=ce
-	"""
-}
-
-
-// // locus collector + dedup of bam
-// process locus_collector_dedup {
-// 	cpus 16
-
-// 	input:
-// 		set group, val(type), val(id), file(bam), file(bai) from bams
-
-// 	output:
-// 		set group, val(type), val(id), file("${type}_${id}.bwa.sort.dedup.bam"), file("${type}_${id}.bwa.sort.dedup.bam.bai") into dedup_bam
-// 		set group, val(type), val(id), file(bam), file(bai), file("dedup_metrics.txt") into bam_dedup_stats
-
-// 	"""
-// 	sentieon driver -t ${task.cpus} -i $bam \\
-// 		--algo LocusCollector --fun score_info ${type}_score.gz
-// 	sentieon driver -t ${task.cpus} -i $bam \\
-// 		--algo Dedup --rmdup --score_info ${type}_score.gz \\
-// 		--metrics dedup_metrics.txt ${type}_${id}.bwa.sort.dedup.bam
-// 	"""
-// }
 
 // indel realignment
 process indel_realign {
 	cpus 16
 
 	input:
-		set group, val(type), val(id), file(bam), file(bai) from bams
+		set group, val(type), val(id), file(bam), file(bai) from dedup_bam
 
 	output:
 		set group, val(type), val(id), file("${type}_${id}.bwa.sort.dedup.realigned.bam"), file("${type}_${id}.bwa.sort.dedup.realigned.bam.bai") into realigned_bam
