@@ -210,7 +210,7 @@ process CollectDuplexSeqMetrics {
 	"""
 }
 
-
+//#> tmp.aligned.bam
 process SamToFastq2 {
 	cpus 40
 
@@ -228,11 +228,11 @@ process SamToFastq2 {
 		INTERLEAVE=true \\
 		INCLUDE_NON_PF_READS=true \\
 		CREATE_INDEX=true \\
-		| sentieon bwa mem -K 1000000 -p -t 56 $genome_file /dev/stdin > tmp.aligned.bam
-	picard -Xmx60g -XX:ParallelGCThreads=56 -Djava.io.tmpdir=. MergeBamAlignment \\
+		| sentieon bwa mem -M -t ${task.cpus} $genome_file -p /dev/stdin \\
+		| picard -Xmx60g -Djava.io.tmpdir=. MergeBamAlignment \\
 		VALIDATION_STRINGENCY=SILENT \\
 		UNMAPPED=$bam \\
-		ALIGNED=tmp.aligned.bam \\
+		ALIGNED=/dev/stdin \\
 		OUTPUT=pool1_consensus.aligned.bam \\
 		R=$genome_file \\
 		CLIP_ADAPTERS=false \\
@@ -352,15 +352,18 @@ process sentieon_qc {
 
 	"""
 	sentieon driver \\
-		-r $genome_file --interval $target_intervals \\
+		-r $genome_file --interval $targets \\
 		-t ${task.cpus} -i ${bam} \\
 		--algo MeanQualityByCycle mq_metrics.txt \\
 		--algo QualDistribution qd_metrics.txt \\
 		--algo GCBias --summary gc_summary.txt gc_metrics.txt \\
 		--algo AlignmentStat aln_metrics.txt \\
 		--algo InsertSizeMetricAlgo is_metrics.txt \\
-		--algo HsMetricAlgo --targets_list $target_intervals --baits_list $target_intervals hs_metrics.txt \\
 		--algo CoverageMetrics --cov_thresh 1 --cov_thresh 10 --cov_thresh 30 --cov_thresh 100 --cov_thresh 250 --cov_thresh 500 cov_metrics.txt 
+	sentieon driver \\
+		-r $genome_file \\
+		-t ${task.cpus} -i ${bam} \\
+		--algo HsMetricAlgo --targets_list $target_intervals --baits_list $target_intervals hs_metrics.txt
 	qc_sentieon.pl $id umi > ${id}.QC
 	"""
 
@@ -402,13 +405,15 @@ process tnscope {
 				-r $genome_file \\
 				-i $tumor \\
 				-i $normal \\
+				--interval $targets \\
 				--algo TNscope \\
 				--tumor_sample ${tumor_id}_tumor \\
 				--normal_sample ${normal_id}_normal \\
 				--cosmic $cosmic \\
 				--dbsnp $dbsnp \\
+				--disable_detector sv \\
 				${group}_tnscope.vcf
-			#/opt/bin/filter_mutect.pl ${group}_tnscope.vcf.raw > ${group}_tnscope.vcf
+			#bedtools intersect -a ${group}_tnscope.vcf.raw -b $targets -header > ${group}_tnscope.vcf
 			"""
 		}
 		else {
@@ -417,18 +422,20 @@ process tnscope {
 				-t ${task.cpus} \\
 				-r $genome_file \\
 				-i $bam \\
+				--interval $targets \\
 				--algo TNscope \\
 				--tumor_sample $id \\
 				--cosmic $cosmic \\
 				--dbsnp $dbsnp \\
+				--disable_detector sv \\
 				${group}_tnscope.vcf
-			#/opt/bin/filter_mutect_single.pl ${group}_tnscope.vcf.raw > ${group}_tnscope.vcf
+			#bedtools intersect -a ${group}_tnscope.vcf.raw -b $targets -header >  ${group}_tnscope.vcf
 			"""
 		}
 }
 
 process freebayes{
-	cpus 16
+	cpus 1
 	
 	input:
 		set group, type, id, file(bam), file(bai), file(plot) from bam_freebayes
@@ -446,14 +453,14 @@ process freebayes{
 			normal_id = id[normal_index]
 			
 			"""
-			freebayes -f $genome_file -t $bed --pooled-continuous --pooled-discrete -F 0.03 $tumor $normal > ${group}_${bed}_freebayes.vcf
-			#vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__freebayes.vcf > ${group}_${bed}_freebayes.vcf
+			freebayes -f $genome_file -t $bed --pooled-continuous --pooled-discrete -F 0.03 $tumor $normal > ${group}__${bed}_freebayes.vcf
+			vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__${bed}_freebayes.vcf > ${group}_${bed}_freebayes.vcf
 			"""
 		}
 		else {
 			"""
-			freebayes -f $genome_file -C 2 -F 0.01 --pooled-continuous --genotype-qualities -t $bed $bam > ${group}_${bed}_freebayes.vcf
-			#vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__freebayes.vcf > ${group}_${bed}_freebayes.vcf
+			freebayes -f $genome_file -C 2 -F 0.01 --pooled-continuous --genotype-qualities -t $bed $bam > ${group}__${bed}_freebayes.vcf
+			vcffilter -f "QUAL > 1 & QUAL / AO > 10 & SAF > 0 & SAR > 0 & RPR > 1 & RPL > 1" ${group}__${bed}_freebayes.vcf > ${group}_${bed}_freebayes.vcf
 			"""
 		}
 }
@@ -502,7 +509,7 @@ process manta {
 				--generateEvidenceBam \\
 				--runDir .
 			python runWorkflow.py -m local -j ${task.cpus}
-			#/opt/bin/filter_manta.pl results/variants/somaticSV.vcf.gz > ${group}_manta.vcf
+			#filter_manta_paired.pl results/variants/somaticSV.vcf.gz > ${group}_manta.vcf
 			mv results/variants/tumorSV.vcf.gz ${group}_manta.vcf.gz
 			gunzip ${group}_manta.vcf.gz
 			"""
@@ -517,7 +524,7 @@ process manta {
 				--generateEvidenceBam \\
 				--runDir .
 			python runWorkflow.py -m local -j ${task.cpus}
-			#/opt/bin/filter_manta.pl results/variants/tumorSV.vcf.gz > ${group}_manta.vcf
+			#filter_manta.pl results/variants/tumorSV.vcf.gz > ${group}_manta.vcf
 			mv results/variants/tumorSV.vcf.gz ${group}_manta.vcf.gz
 			gunzip ${group}_manta.vcf.gz
 			"""

@@ -85,7 +85,7 @@ elsif ($type eq "panel" || $type eq "umi") {
 	    <HS>;
             my $vals = <HS>;
             my @a = split /\t/, $vals;
-            $results{'pct_on_target'} = $a[24];
+            $results{'pct_on_target'} = $a[18];
             #print "pct_on_target: $a[18]\n";
             $results{'fold_enrichment'} = $a[25];
             #print "fold_enrichment: $a[25]\n";
