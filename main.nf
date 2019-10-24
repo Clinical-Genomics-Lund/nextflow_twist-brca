@@ -5,6 +5,7 @@ targets = params.targets
 targets_zip = params.targets_zip
 targets_brca12 = params.targets_brca12
 target_intervals = params.target_intervals
+target_intervals_big = params.target_intervals_big
 bed_melt = params.bed_melt
 
 // FASTA //
@@ -41,7 +42,7 @@ println(mode)
 Channel
 	.fromPath("${params.targets}")
 	.ifEmpty { exit 1, "Regions bed file not found: ${params.targets}" }
-	.splitText( by: 500, file: 'bedpart.bed' )
+	.splitText( by: 170, file: 'bedpart.bed' )
 	.set { beds_freebayes; }
 
 Channel
@@ -50,9 +51,9 @@ Channel
 	.map{ row-> tuple( row.group, row.type, row.id, row.read1, row.read2 ) }
 	.set { fastq }
 
-// trimming adapter sequences, TODO: HEADCROP:5 for twist-data (UMIs)
+// Trimming of reads, umis to header and remove 2 overhang + minlen 30
 process trimmomatic {
-	cpus 40
+	cpus 10
 
 	input:
 		set group, val(type), val(id), r1, r2 from fastq
@@ -60,23 +61,39 @@ process trimmomatic {
 	output:
 		set group, val(type), val(id), file("${type}_R1_a_q_u_trimmed.fq.gz"),file("${type}_R2_a_q_u_trimmed.fq.gz") into fastq_trimmed
 
-	"""
-	trimmomatic -Xmx12g PE -phred33 -threads ${task.cpus} \\
-		$r1 $r2 \\
-		${type}_R1_a_trimmed.fq.gz /dev/null \\
-		${type}_R2_a_trimmed.fq.gz /dev/null \\
-		ILLUMINACLIP:$brca_adapt:3:12:7:1:true MINLEN:30
-	trimmomatic -Xmx12G PE -phred33 -threads ${task.cpus} \\
-		${type}_R1_a_trimmed.fq.gz ${type}_R2_a_trimmed.fq.gz \\
-		${type}_R1_a_q_trimmed.fq.gz /dev/null \\
-		${type}_R2_a_q_trimmed.fq.gz /dev/null \\
-		MAXINFO:30:0.25 MINLEN:30
-	trimmomatic -Xmx12G PE -phred33 -threads ${task.cpus} \\
-		${type}_R1_a_q_trimmed.fq.gz ${type}_R2_a_q_trimmed.fq.gz \\
-		${type}_R1_a_q_u_trimmed.fq.gz /dev/null \\
-		${type}_R2_a_q_u_trimmed.fq.gz /dev/null \\
-		HEADCROP:5
-	"""
+	script:
+
+		if( params.trimmer == "trimmo" ) {
+			"""
+			trimmomatic -Xmx12g PE -phred33 -threads ${task.cpus} \\
+				$r1 $r2 \\
+				${type}_R1_a_trimmed.fq.gz /dev/null \\
+				${type}_R2_a_trimmed.fq.gz /dev/null \\
+				ILLUMINACLIP:$brca_adapt:3:12:7:1:true MINLEN:30
+			trimmomatic -Xmx12G PE -phred33 -threads ${task.cpus} \\
+				${type}_R1_a_trimmed.fq.gz ${type}_R2_a_trimmed.fq.gz \\
+				${type}_R1_a_q_trimmed.fq.gz /dev/null \\
+				${type}_R2_a_q_trimmed.fq.gz /dev/null \\
+				MAXINFO:30:0.25 MINLEN:30
+			trimmomatic -Xmx12G PE -phred33 -threads ${task.cpus} \\
+				${type}_R1_a_q_trimmed.fq.gz ${type}_R2_a_q_trimmed.fq.gz \\
+				${type}_R1_a_q_u_trimmed.fq.gz /dev/null \\
+				${type}_R2_a_q_u_trimmed.fq.gz /dev/null \\
+				HEADCROP:5
+			"""
+		}
+		else if ( params.trimmer == "fastp" ) {
+			"""
+			fastp -i $r1 -I $r2 --stdout \\
+				-U --umi_loc=per_read --umi_len=3 \\
+				-w ${task.cpus} \\
+			| fastp --stdin --interleaved_in -f 2 -F 2 \\
+				-o ${type}_R1_a_q_u_trimmed.fq.gz \\
+				-O ${type}_R2_a_q_u_trimmed.fq.gz \\
+				-l 30 \\
+				-w ${task.cpus}
+			"""
+		}
 }
 
 // aligning with sentieon bwa
@@ -91,7 +108,7 @@ process sentieon_bwa {
 
 	"""
 	sentieon bwa mem -M \\
-		-R '@RG\\tID:${id}_${type}\\tSM:${id}_${type}\\tPL:illumina' \\
+		-R '@RG\\tID:${id}\\tSM:${id}\\tPL:illumina' \\
 		-t ${task.cpus} \\
 		$genome_file \\
 		${r1} ${r2} | \\
@@ -191,7 +208,7 @@ process sentieon_qc {
 	publishDir "${outdir}/postmap/twist-brca/", mode: 'copy', overwrite: 'true'
 
 	input:
-		set group, type, id, file(bam), file(bai) from qc_bam
+		set group, type, id, file(bam), file(bai), file(dedup) from bam_dedup_stats
 
 	output:
 		set group, type, id, file("${id}.QC") into qc_val
@@ -209,8 +226,8 @@ process sentieon_qc {
 	sentieon driver \\
 		-r $genome_file \\
 		-t ${task.cpus} -i ${bam} \\
-		--algo HsMetricAlgo --targets_list $target_intervals --baits_list $target_intervals hs_metrics.txt
-	qc_sentieon.pl $id umi > ${id}.QC
+		--algo HsMetricAlgo --targets_list $target_intervals_big --baits_list $target_intervals_big hs_metrics.txt
+	qc_sentieon.pl $id panel > ${id}.QC
 	"""
 
 }
