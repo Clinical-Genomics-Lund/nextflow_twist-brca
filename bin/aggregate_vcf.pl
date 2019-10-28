@@ -408,7 +408,7 @@ sub help_text {
     print "   --manta VCF       Manta VCF path\n";
     print "   --pindel VCF      pindel VCF path\n";
     print "   --strelka VCF     Strelka2 VCF path\n";
-	print "   --tnscope VCF     Tnscope VCF path\n";
+	print "   --tnscope VCF     tnscope VCF path\n";
     print "   --gatkhc VCF      GATK HaplotypeCaller VCF path\n\n";
 
     print "Additional options:\n";
@@ -442,7 +442,7 @@ sub excl_prefix {
 sub is_gzipped {
     my $fn = shift;
     
-    my $file_str = `file $fn`;
+    my $file_str = `file -L $fn`;
     return 1 if $file_str =~ /gzip compressed/;
     return 0;
 }
