@@ -4,7 +4,7 @@ From:nfcore/base
 %labels
 	MAINTAINER Viktor henmyr <viktor.henmyr@skane.se>
 	DESCRIPTION Singularity container for TWIST-BRCA pipeline
-	VERSION 0.0.2
+	VERSION 0.0.3
 
 %environment
 	PATH=/opt/conda/envs/twist-brca/bin:/opt/bin:$PATH
